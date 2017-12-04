@@ -1,5 +1,7 @@
-﻿<#
+<#
   # Author: Eric Gruber 2014, NetSPI
+  # Updated: Alex Verboon July 28.2017, added Control Flow Guard information
+
   .Synopsis
    Updated module to pull security information from compiled Windows binaries.
   .EXAMPLE
@@ -133,6 +135,7 @@ function Get-PESecurity
       NO_SEH = 0x0400 # Image does not use SEH.  No SE handler may reside in this image
       NO_BIND = 0x0800 # Do not bind this image.
       WDM_DRIVER = 0x2000 # Driver uses WDM model
+      GUARD_CF = 0x4000 # Control Flow Guard
       TERMINAL_SERVER_AWARE = 0x8000
     } -Bitfield
 
@@ -343,6 +346,8 @@ function Get-PESecurity
     $Col5 = New-Object system.Data.DataColumn Authenticode, ([string])
     $Col6 = New-Object system.Data.DataColumn StrongNaming, ([string])
     $Col7 = New-Object system.Data.DataColumn SafeSEH, ([string])
+    $Col8 = New-Object system.Data.DataColumn ControlFlowGuard, ([string])
+    $Col9 = New-Object system.Data.DataColumn HighentropyVA, ([string])
     $Table.columns.add($Col1)
     $Table.columns.add($Col2)
     $Table.columns.add($Col3)
@@ -350,11 +355,13 @@ function Get-PESecurity
     $Table.columns.add($Col5)
     $Table.columns.add($Col6)
     $Table.columns.add($Col7)
+    $Table.columns.add($Col8)
+    $Table.columns.add($Col9)
   }
   Process
   {
 
-
+   
 
     $Files = Get-Files
     Enumerate-Files $Files $Table
@@ -381,15 +388,22 @@ function Enumerate-Files
   foreach ($CurrentFile in $Files)
   {
     $ASLR = $false
+    $HighentropyVA = $false
     $DEP = $false
     $SEH = $false
+    $ControlFlowGuard = $false
     $Authenticode = $false
     $StrongNaming = $false
+    $CFG = $false
 
     $FileByteArray = [IO.File]::ReadAllBytes($CurrentFile)
     $Handle = [System.Runtime.InteropServices.GCHandle]::Alloc($FileByteArray, 'Pinned')
     $PEBaseAddr = $Handle.AddrOfPinnedObject()
     $DosHeader = $PEBaseAddr -as $ImageDosHeader
+    if ($FileByteArray.Length -lt $DosHeader.e_lfanew)
+    {
+      continue
+    }
     $PointerNtHeader = [IntPtr] ($PEBaseAddr.ToInt64() + $DosHeader.e_lfanew)
     $NTHeader = $PointerNtHeader -as $ImageNTHdrs
     if ($NTHeader.OptionalHeader.Magic -eq 0){
@@ -397,10 +411,12 @@ function Enumerate-Files
         $Row.FileName = $CurrentFile
         $Row.ARCH = 'Unknown Format'
         $Row.ASLR = 'Unknown Format'
+        $Row.HighentropyVA = 'Unknown Format'
         $Row.DEP = 'Unknown Format'
         $Row.Authenticode = 'Unknown Format'
         $Row.StrongNaming = 'Unknown Format'
         $Row.SafeSEH = 'Unknown Format'
+        $Row.ControlFlowGuard = 'Unknown Format'
         $Table.Rows.Add($Row)
         Continue
     }
@@ -408,15 +424,17 @@ function Enumerate-Files
     {
       $NTHeader = $PointerNtHeader -as $ImageNTHdrs64
     }
+    
     $ARCH = $NTHeader.FileHeader.Machine.toString()
     $DllCharacteristics = $NTHeader.OptionalHeader.DllCharacteristics.toString().Split(',')
     $value = 0
     if([int32]::TryParse($DllCharacteristics, [ref]$value)){
-
+        if($value -band 0x20){
+            $HighentropyVA = $true
+        }
         if($value -band 0x40){
             $ASLR = $true
         }
-
         if($value -band 0x100){
             $DEP = $true
         }
@@ -425,25 +443,37 @@ function Enumerate-Files
             $SEH = 'N/A'
         }
 
+        if($value -band 0x4000){
+            $ControlFlowGuard = $true
+        }
+
     } else {
 
-    foreach($DllCharacteristic in $DllCharacteristics)
-    {
-      switch($DllCharacteristic.Trim()){
-        'DYNAMIC_BASE'
-        {
-          $ASLR = $true
-        }
-        'NX_COMPAT'
-        {
-          $DEP = $true
-        }
-        'NO_SEH'
-        {
-          $SEH = 'N/A'
+      foreach($DllCharacteristic in $DllCharacteristics)
+      {
+        switch($DllCharacteristic.Trim()){
+          'DYNAMIC_BASE'
+          {
+            $ASLR = $true
+          }
+          'NX_COMPAT'
+          {
+            $DEP = $true
+          }
+          'NO_SEH'
+          {
+            $SEH = 'N/A'
+          }
+          'GUARD_CF'
+          {
+            $ControlFlowGuard = $true
+          }
+          'HIGH_ENTROPY_VA'
+          {
+            $HighentropyVA = $true
+          }
         }
       }
-    }
 
     }
     #Get Strongnaming Status
@@ -471,6 +501,8 @@ function Enumerate-Files
     $Row.Authenticode = $Authenticode
     $Row.StrongNaming = $StrongNaming
     $Row.SafeSEH = $SEH
+    $Row.ControlFlowGuard = $ControlFlowGuard
+    $Row.HighentropyVA = $HighentropyVA
     $Table.Rows.Add($Row)
   }
 }
